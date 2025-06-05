@@ -73,12 +73,34 @@ def send_request(addr, request):
         response = s.recv(65536).decode()
         return json.loads(response)
 
+def check_alive_nodes():
+    global ALIVE_NODES
+    while True:
+        new_alive = []
+        for node in NODES:
+            if node == f"{HOST}:{PORT}":
+                new_alive.append(node)
+                continue
+            try:
+                resp = send_request(node, {"cmd": "PING"})
+                if resp.get("status") == "ALIVE":
+                    new_alive.append(node)
+            except:
+                print(f"[HealthCheck] Node {node} unreachable.")
+        ALIVE_NODES = new_alive
+        print(f"[HealthCheck] Alive nodes: {ALIVE_NODES}")
+        time.sleep(10)
+
 def handle_client(conn, addr):
     try:
         request = json.loads(conn.recv(65536).decode())
         cmd = request.get("cmd")
         key = request.get("key")
         value = request.get("value")
+
+        if cmd == "PING":
+            conn.sendall(json.dumps({"status": "ALIVE"}).encode())
+            return
 
         if cmd == "SNAPSHOT":
             with DATA_LOCK:
@@ -91,13 +113,41 @@ def handle_client(conn, addr):
             replica_node = secondary_node_for_key(key)
             current_node = f"{HOST}:{PORT}"
 
-            if cmd in ["PUT", "GET", "DELETE"] and responsible_node != current_node:
-                result = send_request(responsible_node, request)
-                conn.sendall(json.dumps(result).encode())
-                return
+            global DATA_CHANGED
+
+            if cmd in ["PUT", "GET", "DELETE"]:
+                if responsible_node != current_node and responsible_node not in ALIVE_NODES:
+                    if replica_node == current_node:
+                        print(f"[Fallback] Primary {responsible_node} died. Acting as fallback for key '{key}'")
+                        with DATA_LOCK:
+                            if cmd == "GET":
+                                val = DATA_REPLICA.get(key)
+                                conn.sendall(json.dumps({key: val}).encode())
+                            elif cmd == "DELETE":
+                                DATA_REPLICA.pop(key, None)
+                                DATA_CHANGED = True
+                                conn.sendall(json.dumps({"status": "REPLICA_DELETED"}).encode())
+                            elif cmd == "PUT":
+                                if value is None:
+                                    conn.sendall(json.dumps({"status": "MISSING VALUE"}).encode())
+                                    return
+                                DATA_REPLICA[key] = value
+                                DATA_CHANGED = True
+                                conn.sendall(json.dumps({"status": "REPLICA_PUT"}).encode())
+                        return
+                    else:
+                        conn.sendall(json.dumps({"status": "ERROR", "msg": f"Primary node {responsible_node} unreachable"}).encode())
+                        return
+
+                if responsible_node != current_node:
+                    try:
+                        result = send_request(responsible_node, request)
+                        conn.sendall(json.dumps(result).encode())
+                    except Exception as e:
+                        conn.sendall(json.dumps({"status": "ERROR", "msg": f"Failed to reach primary node: {e}"}).encode())
+                    return
 
             with DATA_LOCK:
-                global DATA_CHANGED
                 if cmd == "PUT":
                     if value is None:
                         conn.sendall(json.dumps({"status": "MISSING VALUE"}).encode())
@@ -105,7 +155,7 @@ def handle_client(conn, addr):
                     DATA_PRIMARY[key] = value
                     DATA_CHANGED = True
 
-                    if replica_node != current_node:
+                    if replica_node != current_node and replica_node in ALIVE_NODES:
                         try:
                             send_request(replica_node, {
                                 "cmd": "PUT_REPLICA",
@@ -114,6 +164,8 @@ def handle_client(conn, addr):
                             })
                         except Exception as e:
                             print(f"[Replica Error] Could not send to replica {replica_node}: {e}")
+                    else:
+                        print(f"[Replica Warning] Replica node {replica_node} is down. Skipping replication.")
 
                     conn.sendall(json.dumps({"status": "OK"}).encode())
 
@@ -126,8 +178,7 @@ def handle_client(conn, addr):
                     DATA_REPLICA.pop(key, None)
                     DATA_CHANGED = True
 
-                    # Gửi yêu cầu xóa tới replica
-                    if replica_node != current_node:
+                    if replica_node != current_node and replica_node in ALIVE_NODES:
                         try:
                             send_request(replica_node, {
                                 "cmd": "DELETE_REPLICA",
@@ -135,6 +186,8 @@ def handle_client(conn, addr):
                             })
                         except Exception as e:
                             print(f"[Replica Error] Could not delete from replica {replica_node}: {e}")
+                    else:
+                        print(f"[Replica Warning] Replica node {replica_node} is down. Skipping replica delete.")
 
                     conn.sendall(json.dumps({"status": "DELETED"}).encode())
 
@@ -182,12 +235,27 @@ def request_snapshot():
                     if get_node_for_key(key) == current_node:
                         recovered[key] = value
                 with DATA_LOCK:
-                    global DATA_CHANGED, DATA_PRIMARY
+                    global DATA_CHANGED, DATA_PRIMARY, DATA_REPLICA
                     DATA_PRIMARY = recovered
+                    DATA_REPLICA = {}
                     DATA_CHANGED = True
                     with open(DATA_FILE, "w") as f:
-                        json.dump({"primary": DATA_PRIMARY, "replica": {}}, f)
+                        json.dump({"primary": DATA_PRIMARY, "replica": DATA_REPLICA}, f)
                 print(f"[Recovery] Data recovered from {node}")
+
+                # === Gửi lại replica nếu node là primary của key ===
+                for key, value in recovered.items():
+                    replica_node = secondary_node_for_key(key)
+                    if replica_node != current_node and replica_node in ALIVE_NODES:
+                        try:
+                            send_request(replica_node, {
+                                "cmd": "PUT_REPLICA",
+                                "key": key,
+                                "value": value
+                            })
+                            print(f"[Sync] Sent replica for key '{key}' to {replica_node}")
+                        except Exception as e:
+                            print(f"[Sync Error] Failed to sync replica to {replica_node}: {e}")
                 return
         except Exception as e:
             print(f"[Recovery] Failed from {node}: {e}")
@@ -195,11 +263,10 @@ def request_snapshot():
 # ==== Main ====
 load_data()
 
-# In ra node chính để kiểm tra hash ổn định
-print(f"[Debug] Primary node for 'name2': {get_node_for_key('name2')}")
-
 if not DATA_PRIMARY:
     request_snapshot()
 
+threading.Thread(target=check_alive_nodes, daemon=True).start()
 threading.Thread(target=save_data_periodically, daemon=True).start()
+
 start_server()
