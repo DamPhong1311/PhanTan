@@ -50,6 +50,13 @@ def load_data():
         DATA_PRIMARY = {}
         DATA_REPLICA = {}
 
+    # Nếu không có dữ liệu, thử khôi phục từ snapshot
+    if not DATA_PRIMARY:
+        print(f"[Recovery] No primary data found. Trying to recover from other nodes...")
+        request_snapshot()
+    
+    sync_replicas_on_startup()
+
 def save_data_periodically():
     global DATA_CHANGED
     while True:
@@ -90,6 +97,47 @@ def check_alive_nodes():
         ALIVE_NODES = new_alive
         print(f"[HealthCheck] Alive nodes: {ALIVE_NODES}")
         time.sleep(10)
+
+def sync_replicas_on_startup():
+    current_node = f"{HOST}:{PORT}"
+    print(f"[Sync] Starting replica synchronization for {current_node}")
+
+    # Lấy dữ liệu replica từ các node khác
+    for node in ALIVE_NODES:
+        if node == current_node:
+            continue
+        try:
+            # Lấy snapshot từ node khác
+            snapshot = send_request(node, {"cmd": "SNAPSHOT"})
+            # snapshot là dict key -> value
+            for key, value in snapshot.items():
+                correct_primary = get_node_for_key(key)
+                correct_replica = secondary_node_for_key(key)
+                with DATA_LOCK:
+                    # Nếu mình là primary của key đó, nhưng chưa có hoặc giá trị khác trong primary
+                    if correct_primary == current_node:
+                        if DATA_PRIMARY.get(key) != value:
+                            DATA_PRIMARY[key] = value
+                            print(f"[Sync] Updated primary key '{key}' from node {node}")
+                            global DATA_CHANGED
+                            DATA_CHANGED = True
+                    # Nếu mình là replica của key đó, cũng cập nhật replica
+                    elif correct_replica == current_node:
+                        if DATA_REPLICA.get(key) != value:
+                            DATA_REPLICA[key] = value
+                            print(f"[Sync] Updated replica key '{key}' from node {node}")
+                            DATA_CHANGED = True
+        except Exception as e:
+            print(f"[Sync] Failed to get snapshot from {node}: {e}")
+
+    # Sau khi cập nhật, lưu dữ liệu xuống file
+    with DATA_LOCK:
+        with open(DATA_FILE, "w") as f:
+            json.dump({
+                "primary": DATA_PRIMARY,
+                "replica": DATA_REPLICA
+            }, f)
+    print(f"[Sync] Replica synchronization completed.")
 
 def handle_client(conn, addr):
     try:
@@ -224,47 +272,61 @@ def start_server():
 
 def request_snapshot():
     current_node = f"{HOST}:{PORT}"
+    recovered_primary = {}
+    recovered_replica = {}
+
+    print(f"[Recovery] Start snapshot recovery for {current_node}")
+    
     for node in ALIVE_NODES:
         if node == current_node:
             continue
         try:
             response = send_request(node, {"cmd": "SNAPSHOT"})
             if response:
-                recovered = {}
                 for key, value in response.items():
-                    if get_node_for_key(key) == current_node:
-                        recovered[key] = value
-                with DATA_LOCK:
-                    global DATA_CHANGED, DATA_PRIMARY, DATA_REPLICA
-                    DATA_PRIMARY = recovered
-                    DATA_REPLICA = {}
-                    DATA_CHANGED = True
-                    with open(DATA_FILE, "w") as f:
-                        json.dump({"primary": DATA_PRIMARY, "replica": DATA_REPLICA}, f)
-                print(f"[Recovery] Data recovered from {node}")
+                    correct_primary = get_node_for_key(key)
+                    correct_replica = secondary_node_for_key(key)
 
-                # === Gửi lại replica nếu node là primary của key ===
-                for key, value in recovered.items():
-                    replica_node = secondary_node_for_key(key)
-                    if replica_node != current_node and replica_node in ALIVE_NODES:
-                        try:
-                            send_request(replica_node, {
-                                "cmd": "PUT_REPLICA",
-                                "key": key,
-                                "value": value
-                            })
-                            print(f"[Sync] Sent replica for key '{key}' to {replica_node}")
-                        except Exception as e:
-                            print(f"[Sync Error] Failed to sync replica to {replica_node}: {e}")
-                return
+                    # Nếu key này đúng ra phải là primary ở node hiện tại
+                    if correct_primary == current_node:
+                        recovered_primary[key] = value
+                    # Nếu key này đúng ra phải là replica ở node hiện tại
+                    elif correct_replica == current_node:
+                        recovered_replica[key] = value
         except Exception as e:
             print(f"[Recovery] Failed from {node}: {e}")
 
+    with DATA_LOCK:
+        global DATA_CHANGED, DATA_PRIMARY, DATA_REPLICA
+        DATA_PRIMARY = recovered_primary
+        DATA_REPLICA = recovered_replica
+        DATA_CHANGED = True
+
+        with open(DATA_FILE, "w") as f:
+            json.dump({
+                "primary": DATA_PRIMARY,
+                "replica": DATA_REPLICA
+            }, f)
+
+    print(f"[Recovery] Recovered {len(DATA_PRIMARY)} primary and {len(DATA_REPLICA)} replica keys")
+
+    # Gửi lại các replica tương ứng đến các node khác
+    for key, value in recovered_primary.items():
+        replica_node = secondary_node_for_key(key)
+        if replica_node != current_node and replica_node in ALIVE_NODES:
+            try:
+                send_request(replica_node, {
+                    "cmd": "PUT_REPLICA",
+                    "key": key,
+                    "value": value
+                })
+                print(f"[Sync] Sent replica for key '{key}' to {replica_node}")
+            except Exception as e:
+                print(f"[Sync Error] Failed to sync replica to {replica_node}: {e}")
+
+
 # ==== Main ====
 load_data()
-
-if not DATA_PRIMARY:
-    request_snapshot()
 
 threading.Thread(target=check_alive_nodes, daemon=True).start()
 threading.Thread(target=save_data_periodically, daemon=True).start()
