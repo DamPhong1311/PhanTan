@@ -1,9 +1,3 @@
-Yêu cầu hệ thống
-Python 3.7 trở lên
-
-Hệ điều hành: Windows / Linux / macOS
-
-
 Mỗi node là một tiến trình chạy độc lập trên một port.
 
 Dữ liệu được phân phối giữa các node bằng cách hash key → node.
@@ -22,4 +16,4 @@ nhập vào port: 5002
 
 Lưu ý: mỗi node nên được chạy trong một terminal riêng biệt.
 
-rồi chạy python client.py ở terminal mới và test
+3. Sau khi tất cả các node đã chạy, mở một terminal mới và chạy client để kiểm tra hệ thống: python client.py
