@@ -4,7 +4,7 @@ import time
 import json
 import os
 import hashlib
-from common import get_node_for_key, secondary_node_for_key, get_nodes_for_key
+
 # ==== Config ====
 HOST = '127.0.0.1'
 PORT = int(input("Enter port for this node: "))
@@ -25,13 +25,13 @@ ALIVE_NODES = NODES.copy()
 
 # ==== Functions ====
 
-# def get_node_for_key(key):
-#     key_hash = int(hashlib.sha256(key.encode()).hexdigest(), 16)
-#     return NODES[key_hash % len(NODES)]
+def get_node_for_key(key):
+    key_hash = int(hashlib.sha256(key.encode()).hexdigest(), 16)
+    return NODES[key_hash % len(NODES)]
 
-# def secondary_node_for_key(key):
-#     key_hash = int(hashlib.sha256(key.encode()).hexdigest(), 16)
-#     return NODES[(key_hash + 1) % len(NODES)]
+def secondary_node_for_key(key):
+    key_hash = int(hashlib.sha256(key.encode()).hexdigest(), 16)
+    return NODES[(key_hash + 1) % len(NODES)]
 
 def load_data():
     global DATA_PRIMARY, DATA_REPLICA
@@ -324,6 +324,7 @@ def request_snapshot():
                 print(f"[Sync] Sent replica for key '{key}' to {replica_node}")
             except Exception as e:
                 print(f"[Sync Error] Failed to sync replica to {replica_node}: {e}")
+                
 # ==== Main ====
 load_data()
 

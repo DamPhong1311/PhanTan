@@ -1,23 +1,23 @@
 import socket
 import json
 import hashlib
-from common import get_node_for_key, secondary_node_for_key, get_nodes_for_key
-# Danh sách node đang chạy (thay đổi tùy hệ thống bạn)
+
+
 NODES = [
     ("127.0.0.1", 5000),
     ("127.0.0.1", 5001),
     ("127.0.0.1", 5002)
 ]
 
-# def hash_key(key):
-#     return int(hashlib.sha256(key.encode()).hexdigest(), 16)
+def hash_key(key):
+    return int(hashlib.sha256(key.encode()).hexdigest(), 16)
 
-# def get_nodes_for_key(key):
-#     """Trả về danh sách các node xử lý key này: primary và replica."""
-#     key_hash = hash_key(key)
-#     primary_idx = key_hash % len(NODES)
-#     replica_idx = (primary_idx + 1) % len(NODES)
-#     return [NODES[primary_idx], NODES[replica_idx]]
+def get_nodes_for_key(key):
+    """Trả về danh sách các node xử lý key này: primary và replica."""
+    key_hash = hash_key(key)
+    primary_idx = key_hash % len(NODES)
+    replica_idx = (primary_idx + 1) % len(NODES)
+    return [NODES[primary_idx], NODES[replica_idx]]
 
 def send_message(host, port, message):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -1,23 +1,7 @@
-import hashlib
 import socket
 import json
 
 NODES = ['127.0.0.1:5000', '127.0.0.1:5001', '127.0.0.1:5002']
-
-def hash_key(key):
-    return int(hashlib.sha256(key.encode()).hexdigest(), 16)
-
-def get_node_for_key(key):
-    """Primary node (1st responsible node)."""
-    return NODES[hash_key(key) % len(NODES)]
-
-def secondary_node_for_key(key):
-    """Replica node (next node in ring)."""
-    return NODES[(hash_key(key) + 1) % len(NODES)]
-
-def get_nodes_for_key(key):
-    """Return [primary, replica]"""
-    return [get_node_for_key(key), secondary_node_for_key(key)]
 
 def send_request(node_str, message):
     host, port = node_str.split(":")
