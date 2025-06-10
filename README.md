@@ -14,6 +14,6 @@ nhập vào port: 5001
 
 nhập vào port: 5002
 
-Lưu ý: mỗi node nên được chạy trong một terminal riêng biệt.
+Lưu ý: mỗi node chạy trong một terminal riêng biệt.
 
 3. Sau khi tất cả các node đã chạy, mở một terminal mới và chạy client để kiểm tra hệ thống: python client.py
